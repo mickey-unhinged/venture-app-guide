@@ -158,8 +158,9 @@ export default function Scanner() {
         setScanning(true);
         startScanning();
       }, 2000);
-    } catch (err: any) {
-      setError(err.message || 'Failed to mark attendance. Please try again.');
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to mark attendance. Please try again.';
+      setError(errorMessage);
       setTimeout(() => {
         setError('');
         setScanning(true);
