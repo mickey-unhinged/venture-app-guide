@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { ArrowLeft } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import StudentNav from '@/components/StudentNav';
 
 export default function Scanner() {
+  const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string>('');
@@ -110,9 +114,17 @@ export default function Scanner() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        <h1 className="text-3xl font-bold text-center mb-8">QR Scanner</h1>
+    <div className="min-h-screen bg-background pb-20">
+      <div className="p-6">
+        <div className="flex items-center gap-4 mb-6">
+          <button
+            onClick={() => navigate('/student/dashboard')}
+            className="p-2 hover:bg-card rounded-lg"
+          >
+            <ArrowLeft size={24} className="text-foreground" />
+          </button>
+          <h1 className="text-2xl font-bold text-foreground">Scan QR Code</h1>
+        </div>
         
         <div className="relative aspect-square bg-black rounded-lg overflow-hidden mb-4">
           <video
@@ -142,6 +154,8 @@ export default function Scanner() {
           {scanning ? 'Scanning for QR code...' : 'Processing...'}
         </div>
       </div>
+      
+      <StudentNav />
     </div>
   );
 }
