@@ -33,18 +33,18 @@ export default function Login() {
         });
         if (signInError) throw signInError;
 
-        // Get user profile to check role
+        // Get user role from secure user_roles table
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
-          const { data: profile } = await supabase
-            .from('profiles')
+          const { data: userRole } = await supabase
+            .from('user_roles')
             .select('role')
             .eq('user_id', user.id)
             .single();
 
-          if (profile?.role === 'student') {
+          if (userRole?.role === 'student') {
             navigate('/student/dashboard');
-          } else if (profile?.role === 'lecturer') {
+          } else if (userRole?.role === 'lecturer') {
             navigate('/lecturer/dashboard');
           }
         }

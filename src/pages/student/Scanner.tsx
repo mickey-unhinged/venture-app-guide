@@ -66,22 +66,88 @@ export default function Scanner() {
     try {
       setScanning(false);
       
-      // Get location
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject);
-      });
+      // Validate UUID format
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(data)) {
+        throw new Error('Invalid QR code format');
+      }
 
-      // Parse QR data (assuming format: sessionId)
       const sessionId = data;
 
-      // Record attendance
+      // Get current user
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        throw new Error('User not authenticated');
+      }
+
+      // Verify session exists, is active, and user is enrolled
+      const { data: session, error: sessionError } = await supabase
+        .from('attendance_sessions')
+        .select('id, class_id, is_active, expires_at, location_required, location_latitude, location_longitude, location_radius')
+        .eq('id', sessionId)
+        .single();
+
+      if (sessionError || !session) {
+        throw new Error('Session not found');
+      }
+
+      if (!session.is_active || new Date(session.expires_at) < new Date()) {
+        throw new Error('Session has expired');
+      }
+
+      // Verify student is enrolled in the class
+      const { data: enrollment, error: enrollmentError } = await supabase
+        .from('class_enrollments')
+        .select('id')
+        .eq('student_id', user.id)
+        .eq('class_id', session.class_id)
+        .maybeSingle();
+
+      if (enrollmentError || !enrollment) {
+        throw new Error('You are not enrolled in this class');
+      }
+
+      // Get location if required
+      let locationVerified = false;
+      let position: GeolocationPosition | null = null;
+
+      if (session.location_required) {
+        position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+
+        // Calculate distance using Haversine formula
+        const R = 6371e3; // Earth's radius in meters
+        const φ1 = (session.location_latitude || 0) * Math.PI / 180;
+        const φ2 = position.coords.latitude * Math.PI / 180;
+        const Δφ = (position.coords.latitude - (session.location_latitude || 0)) * Math.PI / 180;
+        const Δλ = (position.coords.longitude - (session.location_longitude || 0)) * Math.PI / 180;
+
+        const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                  Math.cos(φ1) * Math.cos(φ2) *
+                  Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const distance = R * c;
+
+        if (distance > (session.location_radius || 100)) {
+          throw new Error('You are outside the allowed location');
+        }
+
+        locationVerified = true;
+      }
+
+      // Record attendance with validated data
       const { error: dbError } = await supabase
-        .from('attendance')
+        .from('attendance_records')
         .insert({
           session_id: sessionId,
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          scanned_at: new Date().toISOString()
+          student_id: user.id,
+          location_verified: locationVerified,
+          device_info: navigator.userAgent
         });
 
       if (dbError) throw dbError;
@@ -92,9 +158,8 @@ export default function Scanner() {
         setScanning(true);
         startScanning();
       }, 2000);
-    } catch (err) {
-      setError('Failed to mark attendance. Please try again.');
-      console.error('Attendance error:', err);
+    } catch (err: any) {
+      setError(err.message || 'Failed to mark attendance. Please try again.');
       setTimeout(() => {
         setError('');
         setScanning(true);
