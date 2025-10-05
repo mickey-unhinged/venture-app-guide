@@ -16,7 +16,10 @@
     --ring: 221 83% 53%;
   }
 
-  * {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
     @apply border-border;
   }
 
