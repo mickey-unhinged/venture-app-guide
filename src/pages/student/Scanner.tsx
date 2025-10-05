@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { ArrowLeft } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import StudentNav from '@/components/StudentNav';
 
 export default function Scanner() {
+  const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string>('');
@@ -62,22 +66,88 @@ export default function Scanner() {
     try {
       setScanning(false);
       
-      // Get location
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject);
-      });
+      // Validate UUID format
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(data)) {
+        throw new Error('Invalid QR code format');
+      }
 
-      // Parse QR data (assuming format: sessionId)
       const sessionId = data;
 
-      // Record attendance
+      // Get current user
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        throw new Error('User not authenticated');
+      }
+
+      // Verify session exists, is active, and user is enrolled
+      const { data: session, error: sessionError } = await supabase
+        .from('attendance_sessions')
+        .select('id, class_id, is_active, expires_at, location_required, location_latitude, location_longitude, location_radius')
+        .eq('id', sessionId)
+        .single();
+
+      if (sessionError || !session) {
+        throw new Error('Session not found');
+      }
+
+      if (!session.is_active || new Date(session.expires_at) < new Date()) {
+        throw new Error('Session has expired');
+      }
+
+      // Verify student is enrolled in the class
+      const { data: enrollment, error: enrollmentError } = await supabase
+        .from('class_enrollments')
+        .select('id')
+        .eq('student_id', user.id)
+        .eq('class_id', session.class_id)
+        .maybeSingle();
+
+      if (enrollmentError || !enrollment) {
+        throw new Error('You are not enrolled in this class');
+      }
+
+      // Get location if required
+      let locationVerified = false;
+      let position: GeolocationPosition | null = null;
+
+      if (session.location_required) {
+        position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+
+        // Calculate distance using Haversine formula
+        const R = 6371e3; // Earth's radius in meters
+        const φ1 = (session.location_latitude || 0) * Math.PI / 180;
+        const φ2 = position.coords.latitude * Math.PI / 180;
+        const Δφ = (position.coords.latitude - (session.location_latitude || 0)) * Math.PI / 180;
+        const Δλ = (position.coords.longitude - (session.location_longitude || 0)) * Math.PI / 180;
+
+        const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                  Math.cos(φ1) * Math.cos(φ2) *
+                  Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const distance = R * c;
+
+        if (distance > (session.location_radius || 100)) {
+          throw new Error('You are outside the allowed location');
+        }
+
+        locationVerified = true;
+      }
+
+      // Record attendance with validated data
       const { error: dbError } = await supabase
-        .from('attendance')
+        .from('attendance_records')
         .insert({
           session_id: sessionId,
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          scanned_at: new Date().toISOString()
+          student_id: user.id,
+          location_verified: locationVerified,
+          device_info: navigator.userAgent
         });
 
       if (dbError) throw dbError;
@@ -89,8 +159,8 @@ export default function Scanner() {
         startScanning();
       }, 2000);
     } catch (err) {
-      setError('Failed to mark attendance. Please try again.');
-      console.error('Attendance error:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to mark attendance. Please try again.';
+      setError(errorMessage);
       setTimeout(() => {
         setError('');
         setScanning(true);
@@ -110,9 +180,17 @@ export default function Scanner() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-md">
-        <h1 className="text-3xl font-bold text-center mb-8">QR Scanner</h1>
+    <div className="min-h-screen bg-background pb-20">
+      <div className="p-6">
+        <div className="flex items-center gap-4 mb-6">
+          <button
+            onClick={() => navigate('/student/dashboard')}
+            className="p-2 hover:bg-card rounded-lg"
+          >
+            <ArrowLeft size={24} className="text-foreground" />
+          </button>
+          <h1 className="text-2xl font-bold text-foreground">Scan QR Code</h1>
+        </div>
         
         <div className="relative aspect-square bg-black rounded-lg overflow-hidden mb-4">
           <video
@@ -142,6 +220,8 @@ export default function Scanner() {
           {scanning ? 'Scanning for QR code...' : 'Processing...'}
         </div>
       </div>
+      
+      <StudentNav />
     </div>
   );
 }
